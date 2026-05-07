@@ -11,48 +11,63 @@ export async function POST(req: NextRequest) {
   const tmpDir = path.join(os.tmpdir(), "testtrainer");
   await mkdir(tmpDir, { recursive: true });
 
-  let tmpPath: string | null = null;
+  const tmpPaths: string[] = [];
 
   try {
     const formData = await req.formData();
-    const file = formData.get("file") as File | null;
+    const files = formData.getAll("files") as File[];
     const title = (formData.get("title") as string) || "Test sin título";
     const countRaw = formData.get("count");
     const count = countRaw ? Math.min(50, Math.max(1, Number(countRaw))) : 10;
 
-    if (!file) {
-      return NextResponse.json({ error: "No file provided" }, { status: 400 });
+    if (!files.length) {
+      return NextResponse.json({ error: "No se ha proporcionado ningún archivo" }, { status: 400 });
     }
 
-    const bytes = await file.arrayBuffer();
-    const buffer = Buffer.from(bytes);
-    tmpPath = path.join(tmpDir, `${uuidv4()}_${file.name}`);
-    await writeFile(tmpPath, buffer);
+    // Parse all files and combine text
+    const textParts: string[] = [];
+    const fileNames: string[] = [];
 
-    const text = await parseFile(tmpPath, file.type);
-    if (!text.trim()) {
-      return NextResponse.json({ error: "Could not extract text from file" }, { status: 400 });
+    for (const file of files) {
+      const bytes = await file.arrayBuffer();
+      const buffer = Buffer.from(bytes);
+      const tmpPath = path.join(tmpDir, `${uuidv4()}_${file.name}`);
+      tmpPaths.push(tmpPath);
+      await writeFile(tmpPath, buffer);
+
+      const text = await parseFile(tmpPath, file.type);
+      if (text.trim()) {
+        textParts.push(`--- ${file.name} ---\n${text.trim()}`);
+        fileNames.push(file.name);
+      }
     }
 
-    const questions = await generateQuestions(text, count);
+    if (!textParts.length) {
+      return NextResponse.json({ error: "No se pudo extraer texto de ningún archivo" }, { status: 400 });
+    }
+
+    const combinedText = textParts.join("\n\n");
+    const questions = await generateQuestions(combinedText, count);
+
     if (!questions.length) {
-      return NextResponse.json({ error: "AI generated no questions" }, { status: 500 });
+      return NextResponse.json({ error: "La IA no generó ninguna pregunta" }, { status: 500 });
     }
 
     const db = getDb();
     const id = uuidv4();
+    const sourceFilename = fileNames.join(", ");
     db.prepare(
       `INSERT INTO tests (id, title, questions, source_filename) VALUES (?, ?, ?, ?)`
-    ).run(id, title, JSON.stringify(questions), file.name);
+    ).run(id, title, JSON.stringify(questions), sourceFilename);
 
     return NextResponse.json({ id, title, questionCount: questions.length });
   } catch (err) {
     console.error("Upload error:", err);
-    const msg = err instanceof Error ? err.message : "Unknown error";
+    const msg = err instanceof Error ? err.message : "Error desconocido";
     return NextResponse.json({ error: msg }, { status: 500 });
   } finally {
-    if (tmpPath) {
-      unlink(tmpPath).catch(() => {});
+    for (const p of tmpPaths) {
+      unlink(p).catch(() => {});
     }
   }
 }

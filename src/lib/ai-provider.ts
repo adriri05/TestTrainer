@@ -23,49 +23,93 @@ function buildUserPrompt(text: string, count: number): string {
   return `Generate ${count} multiple-choice questions from this study material:\n\n${text.slice(0, 12000)}`;
 }
 
+function friendlyError(err: unknown, provider: string): never {
+  const msg = err instanceof Error ? err.message : String(err);
+  const low = msg.toLowerCase();
+
+  if (
+    low.includes("429") ||
+    low.includes("too many requests") ||
+    low.includes("quota") ||
+    low.includes("rate limit") ||
+    low.includes("rate_limit") ||
+    low.includes("exceeded")
+  ) {
+    throw new Error(
+      `Has superado el límite de peticiones de ${provider}. Espera unos minutos e inténtalo de nuevo, o cambia el proveedor de IA en .env.local.`
+    );
+  }
+
+  if (low.includes("401") || low.includes("unauthorized") || low.includes("invalid") && low.includes("key")) {
+    throw new Error(
+      `API key de ${provider} inválida o no configurada. Revisa el valor en .env.local.`
+    );
+  }
+
+  throw new Error(`Error de ${provider}: ${msg}`);
+}
+
 async function generateWithAnthropic(text: string, count: number): Promise<Question[]> {
-  const Anthropic = (await import("@anthropic-ai/sdk")).default;
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  try {
+    const Anthropic = (await import("@anthropic-ai/sdk")).default;
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-  const msg = await client.messages.create({
-    model: MODELS.anthropic,
-    max_tokens: 4096,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content: buildUserPrompt(text, count) }],
-  });
+    const msg = await client.messages.create({
+      model: MODELS.anthropic,
+      max_tokens: 4096,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content: buildUserPrompt(text, count) }],
+    });
 
-  const raw = msg.content[0].type === "text" ? msg.content[0].text : "";
-  return parseQuestions(raw);
+    const raw = msg.content[0].type === "text" ? msg.content[0].text : "";
+    return parseQuestions(raw);
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("Error de ")) throw err;
+    if (err instanceof Error && err.message.includes("superado")) throw err;
+    friendlyError(err, "Anthropic");
+  }
 }
 
 async function generateWithOpenAI(text: string, count: number): Promise<Question[]> {
-  const OpenAI = (await import("openai")).default;
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  try {
+    const OpenAI = (await import("openai")).default;
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-  const resp = await client.chat.completions.create({
-    model: MODELS.openai,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: buildUserPrompt(text, count) },
-    ],
-    max_tokens: 4096,
-  });
+    const resp = await client.chat.completions.create({
+      model: MODELS.openai,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: buildUserPrompt(text, count) },
+      ],
+      max_tokens: 4096,
+    });
 
-  const raw = resp.choices[0]?.message?.content ?? "";
-  return parseQuestions(raw);
+    const raw = resp.choices[0]?.message?.content ?? "";
+    return parseQuestions(raw);
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("Error de ")) throw err;
+    if (err instanceof Error && err.message.includes("superado")) throw err;
+    friendlyError(err, "OpenAI");
+  }
 }
 
 async function generateWithGemini(text: string, count: number): Promise<Question[]> {
-  const { GoogleGenerativeAI } = await import("@google/generative-ai");
-  const client = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? "");
-  const model = client.getGenerativeModel({
-    model: MODELS.gemini,
-    systemInstruction: SYSTEM_PROMPT,
-  });
+  try {
+    const { GoogleGenerativeAI } = await import("@google/generative-ai");
+    const client = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? "");
+    const model = client.getGenerativeModel({
+      model: MODELS.gemini,
+      systemInstruction: SYSTEM_PROMPT,
+    });
 
-  const result = await model.generateContent(buildUserPrompt(text, count));
-  const raw = result.response.text();
-  return parseQuestions(raw);
+    const result = await model.generateContent(buildUserPrompt(text, count));
+    const raw = result.response.text();
+    return parseQuestions(raw);
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("Error de ")) throw err;
+    if (err instanceof Error && err.message.includes("superado")) throw err;
+    friendlyError(err, "Gemini");
+  }
 }
 
 function parseQuestions(raw: string): Question[] {
